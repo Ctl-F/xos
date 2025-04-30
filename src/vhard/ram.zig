@@ -1,7 +1,8 @@
 const std = @import("std");
 const common = @import("common.zig");
 
-const MAX_SECTIONS = 8;
+pub const PAGE_SIZE = common.Kilobytes(4);
+pub const NUM_PAGES = common.Gigabytes(1) / PAGE_SIZE;
 
 pub const RamError = error{
     UnableToAllocate,
@@ -10,72 +11,37 @@ pub const RamError = error{
 const Ram = @This();
 
 allocator: std.mem.Allocator,
-sections: [][]u8,
-_section_data: [MAX_SECTIONS][]u8,
-section_count: usize,
-section_size: usize,
+pages: [NUM_PAGES][]u8,
 
-pub fn init(baseAllocator: std.mem.Allocator, totalRam: usize) RamError!Ram {
-    const sections: [MAX_SECTIONS]?[]u8 = [1]?[]u8{null} ** MAX_SECTIONS;
+pub fn init(baseAllocator: std.mem.Allocator) RamError!Ram {
 
-    for (0..MAX_SECTIONS) |sectionCount| {
-        const sectionSize = totalRam / (sectionCount + 1);
-        var successfulAllocation = true;
+    var ram = Ram {
+        .allocator = baseAllocator,
+        .pages = undefined,
+    };
 
-        // attempt to allocater the sections
-        for (0..(sectionCount + 1)) |i| attempt: {
-            sections[i] = baseAllocator.alloc(u8, sectionSize) catch {
-                successfulAllocation = false;
-                break :attempt;
-            };
-        }
+    for(0..NUM_PAGES) |i| {
+        const page = baseAllocator.alloc(u8, PAGE_SIZE) catch return RamError.UnableToAllocate;
+        errdefer baseAllocator.free(page);
 
-        if (!successfulAllocation) {
-            var i = 0;
-            while (sections[i]) |section| {
-                baseAllocator.free(section);
-                sections[i] = null;
-                i += 1;
-            }
-            continue;
-        }
-
-        var result = Ram{
-            .allocator = baseAllocator,
-            .section_count = sectionCount,
-            .section_size = sectionSize,
-            .sections = undefined,
-            ._section_data = undefined,
-        };
-
-        for (sections, 0..) |section, i| {
-            if (i == MAX_SECTIONS) break;
-
-            if (section == null) {
-                unreachable; // should not happen
-            }
-            result._section_data[i] = section.?;
-        }
-
-        result.sections = result._section_data[0..result.section_count];
-        return result;
+        ram.pages[i] = page;
     }
 
-    return RamError.UnableToAllocate;
+    return ram;
 }
 
 pub fn deinit(self: Ram) void {
-    for (self.sections) |section| {
-        self.allocator.free(section);
+    for(self.pages) |page| {
+        self.allocator.free(page);
     }
 }
 
-test "ram_allocation_succeeds" {
-    var buffer = [1]u8{0} ** common.Kilobytes(10);
-    const fba = std.heap.FixedBufferAllocator.init(&buffer);
+test "RAM suceeds in allocation" {
+    const gpa = std.heap.page_allocator;
 
-    const ram = try Ram.init(fba, common.Kilobytes(5));
+    const ram = try Ram.init(gpa);
     defer ram.deinit();
 
-    std.debug.print("RAM Allocation Is: {d} sections of size {d}\n", .{ ram.section_count, ram.section_size });
+    std.debug.print("Pages Allocated: {d}\nPage Size: {d}\nTotal RAM: {d}\n", .{ ram.pages.len, ram.pages[0].len, ram.pages.len * ram.pages[0].len });
 }
+
